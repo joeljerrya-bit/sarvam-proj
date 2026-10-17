@@ -1,7 +1,7 @@
 "use client";
 
 import { Chess, type Square } from "chess.js";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const LANGUAGES = [
   ["en-IN", "English"], ["hi-IN", "हिन्दी"], ["ta-IN", "தமிழ்"], ["te-IN", "తెలుగు"],
@@ -14,6 +14,7 @@ const FILES = "abcdefgh";
 export default function Home() {
   const game = useRef(new Chess());
   const recorder = useRef<MediaRecorder | null>(null);
+  const activeAudio = useRef<{ audio: HTMLAudioElement; cancel: () => void } | null>(null);
   const [fen, setFen] = useState(game.current.fen());
   const [moves, setMoves] = useState<string[]>([]);
   const [input, setInput] = useState("");
@@ -24,18 +25,39 @@ export default function Home() {
   const [status, setStatus] = useState("Your move. Say or type a move like “knight to f3”.");
   const [error, setError] = useState("");
 
+  useEffect(() => () => { activeAudio.current?.cancel(); }, []);
+
   function refresh() {
     setFen(game.current.fen());
     setMoves(game.current.history());
   }
 
   async function speak(text: string) {
-    const response = await fetch("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, language }) });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || "Voice output failed.");
-    if (data.audio) {
+    activeAudio.current?.cancel();
+    try {
+      const response = await fetch("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, language }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Voice output failed.");
+      if (!data.audio) return;
+
       const audio = new Audio(`data:audio/wav;base64,${data.audio}`);
-      await audio.play();
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          audio.onended = null;
+          audio.onerror = null;
+          if (activeAudio.current?.audio === audio) activeAudio.current = null;
+          resolve();
+        };
+        activeAudio.current = { audio, cancel: () => { audio.pause(); finish(); } };
+        audio.onended = finish;
+        audio.onerror = finish;
+        void audio.play().catch(finish);
+      });
+    } catch (cause) {
+      setError(cause instanceof Error ? `Narration unavailable: ${cause.message}` : "Narration unavailable.");
     }
   }
 
